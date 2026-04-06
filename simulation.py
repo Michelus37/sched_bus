@@ -16,6 +16,7 @@ def simulate(rounds: int, strategy: Strategy, seed: Optional[int] = None) -> dic
         round_seed = rng.randint(0, 10_000_000)
         ctx = engine.play_full_round(strategy=strategy, seed=round_seed)
         results.append(ctx)
+        
 
     won = sum(1 for r in results if r.is_won)
     lost = rounds - won
