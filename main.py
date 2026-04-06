@@ -1,12 +1,13 @@
 from engine import RoundEngine
 from simulation import simulate
-from strategy import RandomStrategy
+from strategy import HeuristicStrategy, RandomStrategy
 
 
 if __name__ == "__main__":
     engine = RoundEngine(stake=500)
-    strategy = RandomStrategy(seed=42)
 
+    print("Single round with HeuristicStrategy")
+    strategy = HeuristicStrategy()
     ctx = engine.play_full_round(strategy=strategy, seed=123)
 
     print("State:", ctx.state.name)
@@ -17,5 +18,6 @@ if __name__ == "__main__":
     for evaluation in ctx.evaluations:
         print(vars(evaluation))
 
-    print("\nSimulation:")
-    print(simulate(rounds=1000, strategy=RandomStrategy(seed=99), seed=1))
+    print("\nSimulation comparison:")
+    print("Random:", simulate(rounds=5000, strategy=RandomStrategy(seed=99), seed=1))
+    print("Heuristic:", simulate(rounds=5000, strategy=HeuristicStrategy(), seed=1))
