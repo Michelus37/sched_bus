@@ -1,4 +1,5 @@
 # sched_bus
+
 This project is a structured analysis of a minigame from **Schedule I**, with the goal of turning its flow into a clean and reusable logical model.
 
 Instead of building a messy collection of `if` statements, the project focuses on describing the minigame as a set of:
@@ -44,7 +45,20 @@ The final goal is to have a logical foundation that can be reused for things suc
 - automated decision-making
 - further technical integration
 
-## Notes
+## Project Structure
 
-This repository focuses on **logic and structure first**.  
-Implementation details, direct game interaction, and technical integration can be added later on top of this foundation.
+- `models.py` → core data models, enums, and round context
+- `deck.py` → deck creation, shuffling, and card drawing
+- `rules.py` → pure rule evaluation for all four game steps
+- `strategy.py` → strategy interface and strategy implementations
+- `engine.py` → round flow and state machine logic
+- `simulation.py` → repeated round simulation and statistics
+- `main.py` → simple entry point for demo runs and simulations
+- `tests/` → automated tests for rules and engine behavior
+
+## Running the Project
+
+You can run the project directly with:
+
+```bash
+python main.py
