@@ -3,76 +3,70 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from detector import CardDetector, ControlAvailability, ControlDetector, DetectedCard, StateDetector
-from models import Card, RoundState
+from detector import (
+    CardDetector,
+    DetectedButtons,
+    DetectedCard,
+    LiveUIState,
+    StateDetector,
+    ButtonDetector,
+)
+from models import Card
 from vision import Region, ScreenCapture
 
 
 @dataclass(frozen=True, slots=True)
 class TableLayout:
-    """Defines fixed screen regions for the game table.
-
-    Start with manually measured regions from screenshots.
-    """
-
     table_region: Region
+
     card1_region: Region
     card2_region: Region
     card3_region: Region
     card4_region: Region
 
+    # Optional: button regions later, if needed for matching
+    ready_button_region: Optional[Region] = None
+    decision_panel_region: Optional[Region] = None
+
 
 @dataclass(slots=True)
 class LiveGameSnapshot:
-    state: Optional[RoundState]
+    ui_state: LiveUIState
     visible_cards: list[Card] = field(default_factory=list)
     detected_cards: list[DetectedCard] = field(default_factory=list)
-    controls: Optional[ControlAvailability] = None
-    round_finished: bool = False
+    buttons: Optional[DetectedButtons] = None
 
 
 class GameReader:
-    """Reads the visible game state from the real game screen.
-
-    Important:
-    - This should only READ from the game.
-    - It should not contain game rules.
-    - It should not click anything.
-    """
+    """Reads the real game screen and returns a structured snapshot."""
 
     def __init__(
         self,
         capture: ScreenCapture,
         layout: TableLayout,
         card_detector: Optional[CardDetector] = None,
+        button_detector: Optional[ButtonDetector] = None,
         state_detector: Optional[StateDetector] = None,
-        control_detector: Optional[ControlDetector] = None,
     ) -> None:
         self.capture = capture
         self.layout = layout
         self.card_detector = card_detector or CardDetector()
-        self.state_detector = state_detector or StateDetector()
-        self.control_detector = control_detector or ControlDetector()
+        self.button_detector = button_detector or ButtonDetector()
+        self.state_detector = state_detector or StateDetector(self.button_detector)
 
     def read_snapshot(self) -> LiveGameSnapshot:
         table_image = self.capture.capture_region(self.layout.table_region)
 
-        state = self._safe_detect_state(table_image)
+        buttons = self._safe_detect_buttons(table_image)
+        ui_state = self._safe_detect_ui_state(table_image)
         detected_cards = self._detect_cards(table_image)
-        controls = self._safe_detect_controls(table_image)
-
         visible_cards = [entry.card for entry in detected_cards]
 
-        round_finished = False
-        if controls is not None:
-            round_finished = controls.round_finished
-
         return LiveGameSnapshot(
-            state=state,
+            ui_state=ui_state,
             visible_cards=visible_cards,
             detected_cards=detected_cards,
-            controls=controls,
-            round_finished=round_finished,
+            buttons=buttons,
         )
 
     def _detect_cards(self, table_image) -> list[DetectedCard]:
@@ -90,14 +84,14 @@ class GameReader:
 
         return results
 
-    def _safe_detect_state(self, table_image) -> Optional[RoundState]:
+    def _safe_detect_buttons(self, table_image) -> Optional[DetectedButtons]:
         try:
-            return self.state_detector.detect_round_state(table_image)
+            return self.button_detector.detect_buttons(table_image)
         except NotImplementedError:
             return None
 
-    def _safe_detect_controls(self, table_image) -> Optional[ControlAvailability]:
+    def _safe_detect_ui_state(self, table_image) -> LiveUIState:
         try:
-            return self.control_detector.detect_controls(table_image)
+            return self.state_detector.detect_ui_state(table_image)
         except NotImplementedError:
-            return None
+            return LiveUIState.UNKNOWN
