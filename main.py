@@ -1,13 +1,13 @@
 from engine import RoundEngine
-from simulation import simulate
-from strategy import HeuristicStrategy, RandomStrategy
+from simulation import compare_strategies, simulate
+from strategy import HeuristicStrategy, LookaheadStrategy, RandomStrategy
 
 
 if __name__ == "__main__":
     engine = RoundEngine(stake=500)
 
-    print("Single round with HeuristicStrategy")
-    strategy = HeuristicStrategy()
+    print("Single round with LookaheadStrategy")
+    strategy = LookaheadStrategy()
     ctx = engine.play_full_round(strategy=strategy, seed=1233)
 
     print("State:", ctx.state.name)
@@ -18,6 +18,22 @@ if __name__ == "__main__":
     for evaluation in ctx.evaluations:
         print(evaluation.step, evaluation.success, evaluation.expected, evaluation.actual, evaluation.details)
 
+    print("\nSingle strategy metrics:")
+    print("Heuristic:", simulate(rounds=5000, strategy=HeuristicStrategy(), seed=3, stake=500, win_multiplier=20))
+    #bullshit strategy
+    #print("Lookahead:", simulate(rounds=5000, strategy=LookaheadStrategy(), seed=4, stake=500, win_multiplier=20))
+
     print("\nSimulation comparison:")
-    print("Random:", simulate(rounds=5000, strategy=RandomStrategy(seed=99), seed=2))
-    print("Heuristic:", simulate(rounds=5000, strategy=HeuristicStrategy(), seed=3))
+    comparison = compare_strategies(
+        rounds=5000,
+        strategies={
+            "random": RandomStrategy(seed=99),
+            "heuristic": HeuristicStrategy(),
+            #"lookahead": LookaheadStrategy(),
+        },
+        seed=2,
+        stake=500,
+        win_multiplier=20,
+    )
+    for name, result in comparison.items():
+        print(name, result)
