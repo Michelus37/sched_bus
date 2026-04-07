@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from PIL import Image, ImageGrab
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,3 +91,73 @@ def ensure_region_within_bounds(region: Region, image_width: int, image_height: 
         raise VisionError("Region starts outside image bounds.")
     if region.right > image_width or region.bottom > image_height:
         raise VisionError("Region exceeds image bounds.")
+
+
+class PILScreenCapture(ScreenCapture):
+    """Screenshot capture using PIL.ImageGrab (works on Windows)."""
+
+    def __init__(self, monitor_region: Optional[Region] = None) -> None:
+        """Initialize with optional monitor bounding box.
+        
+        monitor_region: If provided, ImageGrab will only capture this rectangle.
+                       Otherwise captures entire primary monitor.
+        """
+        self.monitor_region = monitor_region
+
+    def capture_fullscreen(self) -> Image.Image:
+        """Capture full screen (or monitor_region if specified)."""
+        if self.monitor_region:
+            bbox = (
+                self.monitor_region.left,
+                self.monitor_region.top,
+                self.monitor_region.right,
+                self.monitor_region.bottom,
+            )
+            return ImageGrab.grab(bbox=bbox)
+        else:
+            return ImageGrab.grab()
+
+    def capture_region(self, region: Region) -> Image.Image:
+        """Capture a specific region of the screen."""
+        # If monitor region is set, adjust coordinates relative to monitor
+        if self.monitor_region:
+            adjusted = Region(
+                x=self.monitor_region.x + region.x,
+                y=self.monitor_region.y + region.y,
+                width=region.width,
+                height=region.height,
+            )
+        else:
+            adjusted = region
+
+        bbox = (adjusted.left, adjusted.top, adjusted.right, adjusted.bottom)
+        return ImageGrab.grab(bbox=bbox)
+
+
+def find_game_window(title: str) -> Region:
+    """Find an open window by title and return its client-area screen region.
+
+    Uses ctypes on Windows to get the exact game content area, excluding
+    the title bar and invisible resize borders that inflate the window rect.
+    """
+    import ctypes
+    import ctypes.wintypes
+
+    hwnd = ctypes.windll.user32.FindWindowW(None, title)
+    if not hwnd:
+        raise VisionError(f"No window found with title '{title}'. Is the game running?")
+
+    # Client rect is relative to the window — gives the render area size
+    client_rect = ctypes.wintypes.RECT()
+    ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(client_rect))
+
+    # ClientToScreen converts the top-left (0, 0) of the client area to screen coords
+    pt = ctypes.wintypes.POINT(0, 0)
+    ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+
+    return Region(
+        x=pt.x,
+        y=pt.y,
+        width=client_rect.right,
+        height=client_rect.bottom,
+    )

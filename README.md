@@ -29,10 +29,17 @@ The logic is modeled in a structured way, similar to a:
 
 Each step of the minigame is described by:
 
-1. the current state  
-2. the available actions  
-3. the conditions for each outcome  
-4. the transition to the next state  
+┌─────────────────────────────────────────────┐
+│  Game Loop (every 2 seconds)               │
+├─────────────────────────────────────────────┤
+│ 1. Screenshot capture (whole screen)        │
+│ 2. Detect game state (which of 5 screens?)  │
+│ 3. Crop card region + detect cards          │
+│ 4. Feed cards to strategy.decide()          │
+│ 5. Get action (which button to click)       │
+│ 6. Execute mouse click                      │
+│ 7. Wait 2 seconds, repeat                   │
+└─────────────────────────────────────────────┘
 
 This makes the system easier to test, maintain, and extend later.
 
