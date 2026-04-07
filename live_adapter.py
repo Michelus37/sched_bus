@@ -27,6 +27,9 @@ class AdapterAction:
     payload: dict | None = None
 
 
+CARD_DETECT_MAX_RETRIES = 6  # polls before giving up on card detection and deciding anyway
+
+
 class LiveAdapter:
     """Bridges live UI state to strategy decisions.
 
@@ -34,6 +37,9 @@ class LiveAdapter:
     - deck starts as a full shuffled 52-card deck (approximation)
     - detected cards are injected into drawn_cards and removed from deck
     - the strategy uses this context to compute probabilities
+
+    If a card can't be detected after CARD_DETECT_MAX_RETRIES polls, the
+    strategy decides anyway based on remaining deck probabilities alone.
 
     State tracking prevents double-clicking within the same UI state.
     """
@@ -44,6 +50,7 @@ class LiveAdapter:
         self._ctx: Optional[RoundContext] = None
         self._last_state: LiveUIState = LiveUIState.UNKNOWN
         self._state_handled: bool = False  # True once we've acted on the current state
+        self._card_wait_ticks: int = 0     # how many ticks we've waited for card detection
 
     def tick(self) -> tuple[LiveGameSnapshot, AdapterAction]:
         snapshot = self.reader.read_snapshot()
@@ -51,6 +58,7 @@ class LiveAdapter:
 
         if current_state != self._last_state:
             self._state_handled = False
+            self._card_wait_ticks = 0
             self._on_state_change(current_state)
             self._last_state = current_state
 
@@ -77,28 +85,33 @@ class LiveAdapter:
             self._reset_ctx()
         return self._ctx  # type: ignore[return-value]
 
-    def _try_inject_card(self, snapshot: LiveGameSnapshot, slot: int) -> bool:
-        """Inject the card at `slot` from the snapshot into the round context.
+    def _try_inject_cards_up_to(self, snapshot: LiveGameSnapshot, slot: int) -> bool:
+        """Inject all cards from slot 0 up to and including `slot`.
 
-        Returns True if the card is now available (either already injected or
-        freshly detected). Returns False if the card could not be detected yet.
+        The game reveals cards one by one:
+          slot 0 → visible after color decision   (1 card on table)
+          slot 1 → visible after H/L decision     (2 cards on table)
+          slot 2 → visible after I/O decision     (3 cards on table)
+
+        Returns True only when the card at `slot` is available in ctx.
         """
         ctx = self._ensure_ctx()
 
-        if len(ctx.drawn_cards) > slot:
-            return True  # already injected in a prior tick
+        for s in range(slot + 1):
+            if len(ctx.drawn_cards) > s:
+                continue  # already injected
 
-        if len(snapshot.visible_cards) <= slot:
-            return False  # detector hasn't found this card yet
+            if len(snapshot.visible_cards) <= s:
+                return False  # card not detected on screen yet
 
-        card: Card = snapshot.visible_cards[slot]
-        ctx.drawn_cards.append(card)
+            card: Card = snapshot.visible_cards[s]
+            ctx.drawn_cards.append(card)
 
-        # Remove from the deck approximation so probabilities stay accurate
-        for i, c in enumerate(ctx.deck):
-            if c == card:
-                ctx.deck.pop(i)
-                break
+            # Keep deck approximation in sync
+            for i, c in enumerate(ctx.deck):
+                if c == card:
+                    ctx.deck.pop(i)
+                    break
 
         return True
 
@@ -116,20 +129,24 @@ class LiveAdapter:
             return AdapterAction(AdapterActionType.CHOOSE_COLOR, {"choice": choice})
 
         if state == LiveUIState.WAIT_HIGHER_LOWER_DECISION:
-            if not self._try_inject_card(snapshot, slot=0):
-                return AdapterAction(AdapterActionType.WAIT)
+            if not self._try_inject_cards_up_to(snapshot, slot=0):
+                self._card_wait_ticks += 1
+                if self._card_wait_ticks < CARD_DETECT_MAX_RETRIES:
+                    return AdapterAction(AdapterActionType.WAIT)
             choice = self.strategy.choose_higher_lower(ctx)
             return AdapterAction(AdapterActionType.CHOOSE_HIGHER_LOWER, {"choice": choice})
 
         if state == LiveUIState.WAIT_INSIDE_OUTSIDE_DECISION:
-            if not self._try_inject_card(snapshot, slot=1):
-                return AdapterAction(AdapterActionType.WAIT)
+            if not self._try_inject_cards_up_to(snapshot, slot=1):
+                self._card_wait_ticks += 1
+                if self._card_wait_ticks < CARD_DETECT_MAX_RETRIES:
+                    return AdapterAction(AdapterActionType.WAIT)
             choice = self.strategy.choose_inside_outside(ctx)
             return AdapterAction(AdapterActionType.CHOOSE_INSIDE_OUTSIDE, {"choice": choice})
 
         if state == LiveUIState.WAIT_SUIT_DECISION:
-            # Best effort: inject card3 if detectable, but suit choice works without it
-            self._try_inject_card(snapshot, slot=2)
+            # Best effort: inject all 3 cards if detectable
+            self._try_inject_cards_up_to(snapshot, slot=2)
             choice = self.strategy.choose_suit(ctx)
             return AdapterAction(AdapterActionType.CHOOSE_SUIT, {"choice": choice})
 

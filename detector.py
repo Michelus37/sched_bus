@@ -109,7 +109,7 @@ class ButtonDetector:
 
     READY_REGION = (860, 680, 1064, 720)
     READY_TEMPLATE = "ready.png"
-    READY_THRESHOLD = 0.70
+    READY_THRESHOLD = 0.55
     
     PANELS = [
         PanelSpec("color", "color_panel.png", (780, 730, 1140, 850)),
@@ -124,16 +124,13 @@ class ButtonDetector:
         self._template_cache: dict[str, np.ndarray] = {}
 
     def detect_buttons(self, image) -> DetectedButtons:
-        ready_visible = self._detect_in_region(
-            image=image,
-            template_name=self.READY_TEMPLATE,
-            region=self.READY_REGION,
-            threshold=self.READY_THRESHOLD,
-        )
+        ready_score = self._score_template(image, self.READY_TEMPLATE, self.READY_REGION)
+        ready_visible = (ready_score or 0.0) >= self.READY_THRESHOLD
+
+        if self.debug:
+            print(f"[DEBUG] ready score={ready_score:.4f} threshold={self.READY_THRESHOLD} visible={ready_visible}")
 
         if ready_visible:
-            if self.debug:
-                print("[DEBUG] ready detected")
             return DetectedButtons(ready_visible=True)
 
         # Match panel templates to determine the game state
@@ -347,13 +344,21 @@ class CardDetector:
     CARD_PRESENCE_EDGE_THRESHOLD = 1200
     CARD_PRESENCE_DARK_RATIO = 0.02
 
-    def __init__(self, template_dir: str | Path = CARD_TEMPLATE_DIR, debug: bool = False) -> None:
+    # Fraction of the card ROI to crop as the top-left corner for matching
+    CORNER_CROP_W = 0.42
+    CORNER_CROP_H = 0.42
+    CORNER_MATCH_THRESHOLD = 0.85
+
+    def __init__(self, template_dir: str | Path = CARD_TEMPLATE_DIR, debug: bool = False, save_crops: bool = False) -> None:
         self.template_dir = Path(template_dir)
         self.debug = debug
+        self.save_crops = save_crops
+        self._crop_counter = 0
         self._template_cache: dict[str, np.ndarray] = {}
         self._full_card_templates: list[tuple[Card, np.ndarray]] = []
         self._rank_templates: list[tuple[Rank, np.ndarray]] = []
         self._suit_templates: list[tuple[Suit, np.ndarray]] = []
+        self._corner_templates: list[tuple[Card, np.ndarray]] = []
         self._load_card_templates()
 
     def detect_cards(self, image) -> list[DetectedCard]:
@@ -374,10 +379,20 @@ class CardDetector:
         if roi is None:
             return None
 
+        if self.save_crops:
+            crop_path = Path(f"_dbg_crop_{self._crop_counter:04d}_{region_box[0]}x{region_box[1]}.png")
+            if hasattr(roi, "save"):
+                roi.save(crop_path)
+            self._crop_counter += 1
+
         if not self._is_card_present(roi):
             if self.debug:
                 print(f"[DEBUG] no card present in region={region_box}")
             return None
+
+        card, score = self._match_corner_template(roi)
+        if card is not None:
+            return DetectedCard(card=card, confidence=score, source=str(region_box))
 
         card, score = self._match_full_card(roi)
         if card is not None:
@@ -487,6 +502,27 @@ class CardDetector:
                 if self.debug:
                     print(f"[DEBUG] loaded suit template: {template_path.name} -> {suit}")
 
+        corners_dir = self.template_dir.parent / "cards_new"
+        if corners_dir.exists():
+            if self.debug:
+                print(f"[DEBUG] loading corner templates from {corners_dir}")
+            for template_path in sorted(corners_dir.glob("*.png")):
+                card = self._parse_card_template_name(template_path.stem)
+                if card is None:
+                    if self.debug:
+                        print(f"[DEBUG] failed to parse card from {template_path.name}")
+                    continue
+
+                template = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+                if template is None:
+                    if self.debug:
+                        print(f"[DEBUG] failed to load corner template {template_path.name}")
+                    continue
+
+                self._corner_templates.append((card, template))
+                if self.debug:
+                    print(f"[DEBUG] loaded corner template: {template_path.name} -> {card}")
+
     def _parse_card_template_name(self, stem: str) -> Optional[Card]:
         if not stem:
             return None
@@ -576,6 +612,25 @@ class CardDetector:
         if suit_name is None:
             return None
         return getattr(Suit, suit_name)
+
+    def _match_corner_template(self, roi) -> tuple[Optional[Card], float]:
+        """Match the top-left corner of the card ROI against combined rank+suit templates."""
+        if not self._corner_templates:
+            return None, 0.0
+
+        gray = np.array(roi.convert("L"), dtype=np.uint8)
+        h, w = gray.shape
+        corner = gray[:int(h * self.CORNER_CROP_H), :int(w * self.CORNER_CROP_W)]
+
+        card, score = self._best_template_match(self._corner_templates, corner)
+
+        if self.debug:
+            print(f"[DEBUG] corner match: card={card} score={score:.3f}")
+
+        if score >= self.CORNER_MATCH_THRESHOLD:
+            return card, score
+
+        return None, 0.0
 
     def _match_full_card(self, roi) -> tuple[Optional[Card], float]:
         if not self._full_card_templates:

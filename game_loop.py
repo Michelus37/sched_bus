@@ -12,64 +12,69 @@ from vision import PILScreenCapture, Region, find_game_window
 
 log = logging.getLogger(__name__)
 
-# Card slot fractions from CardDetector.CARD_SLOTS, expressed as Region objects
-# for a 1920×1080 window.
-_W, _H = 1920, 1080
-
-
-def _frac(x: float, y: float, w: float, h: float) -> Region:
-    return Region(int(x * _W), int(y * _H), int(w * _W), int(h * _H))
+# Card slot positions measured from reference screenshots (1920×1080 game content).
+# Each slot starts just before the card's top-left corner and covers the full card.
+# Spacing between left edges: ~145px.
+_CARD_Y      = 422
+_CARD_W      = 145
+_CARD_H      = 195
 
 
 def _build_layout() -> TableLayout:
     return TableLayout(
-        table_region=Region(0, 0, _W, _H),
-        card1_region=_frac(0.215, 0.375, 0.115, 0.20),
-        card2_region=_frac(0.315, 0.375, 0.115, 0.20),
-        card3_region=_frac(0.415, 0.375, 0.115, 0.20),
-        card4_region=_frac(0.515, 0.375, 0.115, 0.20),
+        table_region=Region(0, 0, 1920, 1080),
+        card1_region=Region(290, _CARD_Y, _CARD_W, _CARD_H),
+        card2_region=Region(435, _CARD_Y, _CARD_W, _CARD_H),
+        card3_region=Region(580, _CARD_Y, _CARD_W, _CARD_H),
+        card4_region=Region(725, _CARD_Y, _CARD_W, _CARD_H),
     )
+
+
+POLL_INTERVAL = 0.5       # seconds between polls while waiting for a state change
+POST_CLICK_WAIT = 5.0     # seconds to wait after a click for the game to animate/transition
 
 
 class GameLoop:
     """Main automation loop.
 
-    Each tick:
-      1. Capture screenshot
-      2. Detect UI state + visible cards
-      3. Ask adapter/strategy for the next action
-      4. Execute the click (if any)
-      5. Sleep until the next tick
+    Polls quickly (POLL_INTERVAL) while waiting for a state to appear.
+    After each click, waits POST_CLICK_WAIT seconds for the game to
+    animate and transition before taking the next screenshot.
     """
 
     def __init__(
         self,
         adapter: LiveAdapter,
         clicker: MouseClicker,
-        tick_interval: float = 2.0,
     ) -> None:
         self.adapter = adapter
         self.clicker = clicker
-        self.tick_interval = tick_interval
 
     def run(self) -> None:
         log.info("Game loop started. Press Ctrl+C to stop.")
         while True:
             try:
                 snapshot, action = self.adapter.tick()
+                cards_str = ", ".join(str(c) for c in snapshot.visible_cards) or "none"
                 log.info(
-                    "state=%-30s action=%s",
+                    "state=%-30s action=%-25s cards=[%s]",
                     snapshot.ui_state.name,
                     action.type.name,
+                    cards_str,
                 )
-                self._execute(action)
+
+                if action.type == AdapterActionType.WAIT:
+                    time.sleep(POLL_INTERVAL)
+                else:
+                    self._execute(action)
+                    time.sleep(POST_CLICK_WAIT)
+
             except KeyboardInterrupt:
                 log.info("Stopped by user.")
                 break
             except Exception as exc:
                 log.warning("Tick error: %s", exc)
-
-            time.sleep(self.tick_interval)
+                time.sleep(POLL_INTERVAL)
 
     def _execute(self, action: AdapterAction) -> None:
         p = action.payload or {}
@@ -89,7 +94,7 @@ class GameLoop:
                 pass
 
 
-def main(dry_run: bool = False, tick_interval: float = 2.0) -> None:
+def main(dry_run: bool = False) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -104,7 +109,7 @@ def main(dry_run: bool = False, tick_interval: float = 2.0) -> None:
     reader = GameReader(
         capture=capture,
         layout=layout,
-        card_detector=CardDetector(debug=False),
+        card_detector=CardDetector(debug=False, save_crops=False),
         button_detector=ButtonDetector(debug=False),
         state_detector=StateDetector(),
     )
@@ -112,7 +117,7 @@ def main(dry_run: bool = False, tick_interval: float = 2.0) -> None:
     adapter = LiveAdapter(reader=reader, strategy=HeuristicStrategy())
     clicker = MouseClicker(offset=(window.x, window.y), dry_run=dry_run)
 
-    GameLoop(adapter=adapter, clicker=clicker, tick_interval=tick_interval).run()
+    GameLoop(adapter=adapter, clicker=clicker).run()
 
 
 if __name__ == "__main__":
