@@ -76,18 +76,24 @@ class RoundState(Enum):
 
 @dataclass(frozen=True, slots=True)
 class Card:
-    rank: Rank
-    suit: Suit
+    rank: Optional[Rank]
+    suit: Optional[Suit]
 
     @property
     def value(self) -> int:
+        if self.rank is None:
+            raise ValueError("Cannot get value of card with None rank")
         return self.rank.value
 
     @property
-    def color_group(self) -> ColorGroup:
+    def color_group(self) -> Optional[ColorGroup]:
+        if self.suit is None:
+            return None
         return self.suit.color_group
 
     def __str__(self) -> str:
+        if self.rank is None or self.suit is None:
+            return f"Card(rank={self.rank}, suit={self.suit})"
         return f"{self.rank.name}:{self.suit.value}"
 
 

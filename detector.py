@@ -3,14 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
 from PIL import Image
 
-from models import Card
-from vision import Region
+from models import *
+print(f"DEBUG: imported Rank = {Rank}")
 
 
 class LiveUIState(Enum):
@@ -60,10 +60,36 @@ class MatchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class GroupSpec:
+    name: str
+    region: tuple[int, int, int, int]
+    templates: tuple[str, ...]
+    min_best_score: float
+    min_margin: float
+
+
+@dataclass(frozen=True, slots=True)
 class PanelSpec:
     name: str
     template: str
     region: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class CardSlot:
+    name: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+    def to_region(self, image_width: int, image_height: int) -> tuple[int, int, int, int]:
+        return (
+            int(self.x * image_width),
+            int(self.y * image_height),
+            int(self.width * image_width),
+            int(self.height * image_height),
+        )
 
 
 class ButtonDetector:
@@ -85,13 +111,6 @@ class ButtonDetector:
     READY_TEMPLATE = "ready.png"
     READY_THRESHOLD = 0.70
     
-    PANELS = [
-        PanelSpec("color", "color_panel.png", (780, 730, 1140, 850)),
-        PanelSpec("higher_lower", "higher_lower_panel.png", (780, 730, 1140, 850)),
-        PanelSpec("inside_outside", "inside_outside_panel.png", (780, 730, 1140, 850)),
-        PanelSpec("suit", "suit_panel.png", (813, 748, 1107, 920)),
-    ]
-
     PANELS = [
         PanelSpec("color", "color_panel.png", (780, 730, 1140, 850)),
         PanelSpec("higher_lower", "higher_lower_panel.png", (780, 730, 1140, 850)),
@@ -317,5 +336,323 @@ class StateDetector:
 
 
 class CardDetector:
-    def detect_card_at_slot(self, image, slot_name: str) -> Optional[DetectedCard]:
+    CARD_SLOTS = [
+        CardSlot("card1", 0.215, 0.375, 0.115, 0.20),
+        CardSlot("card2", 0.315, 0.375, 0.115, 0.20),
+        CardSlot("card3", 0.415, 0.375, 0.115, 0.20),
+    ]
+
+    CARD_TEMPLATE_DIR = "templates/cards"
+    CARD_TEMPLATE_THRESHOLD = 0.70
+    CARD_PRESENCE_EDGE_THRESHOLD = 1200
+    CARD_PRESENCE_DARK_RATIO = 0.02
+
+    def __init__(self, template_dir: str | Path = CARD_TEMPLATE_DIR, debug: bool = False) -> None:
+        self.template_dir = Path(template_dir)
+        self.debug = debug
+        self._template_cache: dict[str, np.ndarray] = {}
+        self._full_card_templates: list[tuple[Card, np.ndarray]] = []
+        self._rank_templates: list[tuple[Rank, np.ndarray]] = []
+        self._suit_templates: list[tuple[Suit, np.ndarray]] = []
+        self._load_card_templates()
+
+    def detect_cards(self, image) -> list[DetectedCard]:
+        image_width, image_height = self._get_image_size(image)
+        results: list[DetectedCard] = []
+
+        for slot in self.CARD_SLOTS:
+            region = slot.to_region(image_width, image_height)
+            detected = self.detect_card_at(image, region)
+            if detected is not None:
+                results.append(detected)
+
+        return results
+
+    def detect_card_at(self, image, region) -> Optional[DetectedCard]:
+        region_box = self._normalize_region(region)
+        roi = self._crop_region(image, region_box)
+        if roi is None:
+            return None
+
+        if not self._is_card_present(roi):
+            if self.debug:
+                print(f"[DEBUG] no card present in region={region_box}")
+            return None
+
+        card, score = self._match_full_card(roi)
+        if card is not None:
+            return DetectedCard(card=card, confidence=score, source=str(region_box))
+
+        card, score = self._match_rank_suit(roi)
+        if card is not None:
+            return DetectedCard(card=card, confidence=score, source=str(region_box))
+
+        if self.debug:
+            print(f"[DEBUG] card visible but not recognized in region={region_box}")
+
         return None
+
+    def _normalize_region(self, region) -> tuple[int, int, int, int]:
+        if hasattr(region, "x") and hasattr(region, "y"):
+            return (int(region.x), int(region.y), int(region.width), int(region.height))
+        if isinstance(region, tuple) and len(region) == 4:
+            return region
+        raise RuntimeError("Unsupported region object. Expected Region or tuple[x, y, width, height].")
+
+    def _get_image_size(self, image) -> tuple[int, int]:
+        if hasattr(image, "size"):
+            return image.size
+        raise RuntimeError("Unsupported image object. Expected PIL.Image.")
+
+    def _is_card_present(self, roi) -> bool:
+        if not hasattr(roi, "convert"):
+            return False
+
+        grayscale = np.array(roi.convert("L"), dtype=np.uint8)
+        dark_ratio = float(np.mean(grayscale < 220))
+        edges = cv2.Canny(grayscale, 50, 150)
+        edge_count = int(np.count_nonzero(edges))
+
+        if self.debug:
+            print(
+                f"[DEBUG] card presence dark_ratio={dark_ratio:.3f} edge_count={edge_count} "
+                f"roi=({grayscale.shape[1]}x{grayscale.shape[0]})"
+            )
+
+        return edge_count > self.CARD_PRESENCE_EDGE_THRESHOLD or dark_ratio > self.CARD_PRESENCE_DARK_RATIO
+
+    def _load_card_templates(self) -> None:
+        if not self.template_dir.exists():
+            if self.debug:
+                print(f"[DEBUG] missing card template directory: {self.template_dir}")
+            return
+
+        for template_path in sorted(self.template_dir.glob("*.png")):
+            card = self._parse_card_template_name(template_path.stem)
+            if card is None:
+                if self.debug:
+                    print(f"[DEBUG] skipped template (parse failed): {template_path.name}")
+                continue
+
+            template = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+            if template is None:
+                if self.debug:
+                    print(f"[DEBUG] failed to load template image: {template_path.name}")
+                continue
+
+            self._full_card_templates.append((card, template))
+            if self.debug:
+                print(f"[DEBUG] loaded full card template: {template_path.name}")
+
+        ranks_dir = self.template_dir / "ranks"
+        suits_dir = self.template_dir / "suits"
+
+        if ranks_dir.exists():
+            if self.debug:
+                print(f"[DEBUG] loading rank templates from {ranks_dir}")
+            for template_path in sorted(ranks_dir.glob("*.png")):
+                rank = self._parse_rank_template_name(template_path.stem)
+                if rank is None:
+                    if self.debug:
+                        print(f"[DEBUG] failed to parse rank from {template_path.name}")
+                    continue
+
+                template = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+                if template is None:
+                    if self.debug:
+                        print(f"[DEBUG] failed to load rank template {template_path.name}")
+                    continue
+
+                self._rank_templates.append((rank, template))
+                if self.debug:
+                    print(f"[DEBUG] loaded rank template: {template_path.name} -> {rank}")
+
+        if suits_dir.exists():
+            if self.debug:
+                print(f"[DEBUG] loading suit templates from {suits_dir}")
+            for template_path in sorted(suits_dir.glob("*.png")):
+                suit = self._parse_suit_template_name(template_path.stem)
+                if suit is None:
+                    if self.debug:
+                        print(f"[DEBUG] failed to parse suit from {template_path.name}")
+                    continue
+
+                template = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+                if template is None:
+                    if self.debug:
+                        print(f"[DEBUG] failed to load suit template {template_path.name}")
+                    continue
+
+                self._suit_templates.append((suit, template))
+                if self.debug:
+                    print(f"[DEBUG] loaded suit template: {template_path.name} -> {suit}")
+
+    def _parse_card_template_name(self, stem: str) -> Optional[Card]:
+        if not stem:
+            return None
+
+        text = stem.lower().replace("-", "_").replace(" ", "_")
+        parts = [part for part in text.split("_") if part]
+
+        # Handle format: "a_diamonds" or "10_clubs"
+        if len(parts) >= 2:
+            rank_str = parts[0]
+            suit_str = "_".join(parts[1:])  # in case suit contains underscore (unlikely)
+        else:
+            # Single part without underscore - skip, it's not a full card template
+            return None
+
+        rank = self._parse_rank(rank_str)
+        suit = self._parse_suit(suit_str)
+
+        if self.debug:
+            print(f"[DEBUG] parsing '{stem}' -> rank_str='{rank_str}' rank={rank} suit_str='{suit_str}' suit={suit}")
+
+        if rank is None or suit is None:
+            if self.debug:
+                print(f"[DEBUG] Failed to parse card from stem '{stem}': rank={rank} suit={suit}")
+            return None
+
+        return Card(rank=rank, suit=suit)
+
+    def _parse_rank_template_name(self, stem: str) -> Optional[Rank]:
+        text = stem.lower().replace("-", "_").replace(" ", "_")
+        return self._parse_rank(text)
+
+    def _parse_suit_template_name(self, stem: str) -> Optional[Suit]:
+        text = stem.lower().replace("-", "_").replace(" ", "_")
+        return self._parse_suit(text)
+
+    def _parse_rank(self, rank_str: str) -> Optional[Rank]:
+        if self.debug:
+            print(f"[DEBUG] _parse_rank called with '{rank_str}', Rank = {Rank}")
+        rank_map = {
+            "a": "ACE",
+            "ace": "ACE",
+            "k": "KING",
+            "king": "KING",
+            "q": "QUEEN",
+            "queen": "QUEEN",
+            "j": "JACK",
+            "jack": "JACK",
+            "t": "TEN",
+            "10": "TEN",
+            "ten": "TEN",
+            "9": "NINE",
+            "8": "EIGHT",
+            "7": "SEVEN",
+            "6": "SIX",
+            "5": "FIVE",
+            "4": "FOUR",
+            "3": "THREE",
+            "2": "TWO",
+        }
+        rank_name = rank_map.get(rank_str)
+        if rank_name is None:
+            return None
+        if self.debug:
+            print(f"[DEBUG] _parse_rank('{rank_str}') -> rank_name='{rank_name}'")
+        rank = getattr(Rank, rank_name, None)
+        if self.debug:
+            print(f"[DEBUG] getattr(Rank, '{rank_name}') = {rank}")
+        return rank
+
+    def _parse_suit(self, suit_str: str) -> Optional[Suit]:
+        suit_map = {
+            "s": "SPADES",
+            "spades": "SPADES",
+            "pik": "SPADES",
+            "h": "HEARTS",
+            "hearts": "HEARTS",
+            "herz": "HEARTS",
+            "c": "CLUBS",
+            "clubs": "CLUBS",
+            "kreuz": "CLUBS",
+            "d": "DIAMONDS",
+            "diamonds": "DIAMONDS",
+            "karo": "DIAMONDS",
+        }
+        suit_name = suit_map.get(suit_str)
+        if suit_name is None:
+            return None
+        return getattr(Suit, suit_name)
+
+    def _match_full_card(self, roi) -> tuple[Optional[Card], float]:
+        if not self._full_card_templates:
+            return None, 0.0
+
+        roi_gray = np.array(roi.convert("L"), dtype=np.uint8)
+        best_card: Optional[Card] = None
+        best_score = 0.0
+
+        for card, template in self._full_card_templates:
+            if roi_gray.shape[0] < template.shape[0] or roi_gray.shape[1] < template.shape[1]:
+                continue
+
+            result = cv2.matchTemplate(roi_gray, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+            if max_val > best_score:
+                best_score = float(max_val)
+                best_card = card
+
+        if best_score >= self.CARD_TEMPLATE_THRESHOLD:
+            return best_card, best_score
+
+        return None, 0.0
+
+    def _match_rank_suit(self, roi) -> tuple[Optional[Card], float]:
+        if not self._rank_templates or not self._suit_templates:
+            return None, 0.0
+
+        region = roi.convert("L")
+        width, height = region.size
+        corner = region.crop((0, 0, int(width * 0.32), int(height * 0.24)))
+
+        rank, rank_score = self._best_template_match(self._rank_templates, corner)
+        suit, suit_score = self._best_template_match(self._suit_templates, corner)
+
+        if rank is None or suit is None:
+            return None, 0.0
+
+        if rank_score < 0.4 or suit_score < 0.4:
+            if self.debug:
+                print(
+                    f"[DEBUG] low rank/suit score rank={rank_score:.3f} suit={suit_score:.3f}"
+                )
+            return None, 0.0
+
+        combined_score = float((rank_score + suit_score) / 2.0)
+        return Card(rank=rank, suit=suit), combined_score
+
+    def _best_template_match(
+        self,
+        templates: list[tuple[Any, np.ndarray]],
+        roi_gray,
+    ) -> tuple[Optional[Any], float]:
+        if not templates:
+            return None, 0.0
+
+        if isinstance(roi_gray, Image.Image):
+            roi_gray = np.array(roi_gray.convert("L"), dtype=np.uint8)
+
+        best_item = None
+        best_score = 0.0
+
+        for item, template in templates:
+            if roi_gray.shape[0] < template.shape[0] or roi_gray.shape[1] < template.shape[1]:
+                continue
+
+            result = cv2.matchTemplate(roi_gray, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+            if max_val > best_score:
+                best_score = float(max_val)
+                best_item = item
+
+        return best_item, best_score
+
+    def _crop_region(self, image, region: tuple[int, int, int, int]):
+        if not hasattr(image, "crop"):
+            raise RuntimeError("Image object does not support crop().")
+
+        left, top, width, height = region
+        return image.crop((left, top, left + width, top + height))
