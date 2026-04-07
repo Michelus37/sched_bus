@@ -41,7 +41,7 @@ def main() -> None:
         print(f"clubs_visible : {result.clubs_visible}")
         print(f"diamonds_visible : {result.diamonds_visible}")
         print(f"spades_visible : {result.spades_visible}")
-        detector = ButtonDetector(template_dir="templates/buttons", debug=True)
+        detector = ButtonDetector(template_dir="templates/buttons", debug=False)
 
 if __name__ == "__main__":
     main()

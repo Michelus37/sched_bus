@@ -6,11 +6,11 @@ from detector import LiveUIState
 
 
 TEST_IMAGES = {
-    "screens/1rdy.jpg": LiveUIState.WAIT_READY,
-    "screens/2red_black.jpg": LiveUIState.WAIT_COLOR_DECISION,
-    "screens/3higher_lower.jpg": LiveUIState.WAIT_HIGHER_LOWER_DECISION,
-    "screens/4inside_outside.jpg": LiveUIState.WAIT_INSIDE_OUTSIDE_DECISION,
-    "screens/5color.jpg": LiveUIState.WAIT_SUIT_DECISION,
+    "1rdy.jpg": LiveUIState.WAIT_READY,
+    "2red_black.jpg": LiveUIState.WAIT_COLOR_DECISION,
+    "3higher_lower.jpg": LiveUIState.WAIT_HIGHER_LOWER_DECISION,
+    "4inside_outside.jpg": LiveUIState.WAIT_INSIDE_OUTSIDE_DECISION,
+    "5color.jpg": LiveUIState.WAIT_SUIT_DECISION,
 }
 
 
@@ -48,7 +48,7 @@ def main() -> None:
 
     for filename, expected_state in TEST_IMAGES.items():
         total_count += 1
-        image_path = base_dir / filename
+        image_path = base_dir / "screens" / filename
 
         if not image_path.exists():
             print(f"[MISSING] {filename}")

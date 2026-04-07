@@ -60,12 +60,10 @@ class MatchResult:
 
 
 @dataclass(frozen=True, slots=True)
-class GroupSpec:
+class PanelSpec:
     name: str
+    template: str
     region: tuple[int, int, int, int]
-    templates: tuple[str, ...]
-    min_best_score: float
-    min_margin: float
 
 
 class ButtonDetector:
@@ -83,51 +81,23 @@ class ButtonDetector:
     - höher ist besser
     """
 
-    READY_REGION = (860, 680, 1060, 720)
+    READY_REGION = (860, 680, 1064, 720)
     READY_TEMPLATE = "ready.png"
     READY_THRESHOLD = 0.70
     
-    COLOR_GROUP = GroupSpec(
-    name="color",
-    region=(780, 730, 1140, 850),
-    templates=("red.png", "black.png"),
-    min_best_score=0.55,
-    min_margin=0.03,
-)
+    PANELS = [
+        PanelSpec("color", "color_panel.png", (780, 730, 1140, 850)),
+        PanelSpec("higher_lower", "higher_lower_panel.png", (780, 730, 1140, 850)),
+        PanelSpec("inside_outside", "inside_outside_panel.png", (780, 730, 1140, 850)),
+        PanelSpec("suit", "suit_panel.png", (813, 748, 1107, 920)),
+    ]
 
-    HIGHER_LOWER_GROUP = GroupSpec(
-    name="higher_lower",
-    region=(780, 730, 1140, 850),
-    templates=("higher.png", "lower.png"),
-    min_best_score=0.55,
-    min_margin=0.03,
-)
-
-    INSIDE_OUTSIDE_GROUP = GroupSpec(
-    name="inside_outside",
-    region=(780, 730, 1140, 850),
-    templates=("inside.png", "outside.png"),
-    min_best_score=0.55,
-    min_margin=0.03,
-)
-
-    SUIT_GROUP = GroupSpec(
-    name="suit",
-    region=(780, 730, 1140, 940),
-    templates=("hearts.png", "clubs.png", "diamonds.png", "spades.png"),
-    min_best_score=0.60,
-    min_margin=0.05,
-    )
-
-    SUIT_GROUP = GroupSpec(
-        name="suit",
-        region=(813, 748, 1107, 920),
-        templates=("hearts.png", "clubs.png", "diamonds.png", "spades.png"),
-        min_best_score=0.50,
-        min_margin=0.03,
-  )
-
-    GROUP_SELECTION_MIN_MARGIN = 0.04
+    PANELS = [
+        PanelSpec("color", "color_panel.png", (780, 730, 1140, 850)),
+        PanelSpec("higher_lower", "higher_lower_panel.png", (780, 730, 1140, 850)),
+        PanelSpec("inside_outside", "inside_outside_panel.png", (780, 730, 1140, 850)),
+        PanelSpec("suit", "suit_panel.png", (813, 748, 1107, 920)),
+    ]
 
     def __init__(self, template_dir: str | Path = "templates/buttons", debug: bool = False) -> None:
         self.template_dir = Path(template_dir)
@@ -147,113 +117,42 @@ class ButtonDetector:
                 print("[DEBUG] ready detected")
             return DetectedButtons(ready_visible=True)
 
-        for group in (
-            self.COLOR_GROUP,
-            self.HIGHER_LOWER_GROUP,
-            self.INSIDE_OUTSIDE_GROUP,
-            self.SUIT_GROUP,
-        ):
-            match = self._best_match(image, group)
-            if match is None:
-                continue
+        # Match panel templates to determine the game state
+        panel_scores = {}
+        for panel in self.PANELS:
+            score = self._score_template(image, panel.template, panel.region)
+            if score is not None:
+                panel_scores[panel.name] = score
+                if self.debug:
+                    print(f"[DEBUG] panel {panel.name}: score={score:.4f}")
 
+        if panel_scores:
+            best_panel = max(panel_scores, key=panel_scores.get)
+            best_score = panel_scores[best_panel]
             if self.debug:
-                print(
-                    f"[DEBUG] group={group.name} "
-                    f"best_template={match.template_name} "
-                    f"score={match.score:.4f} "
-                    f"margin={match.margin:.4f}"
-                )
-
-            if match.score >= group.min_best_score and match.margin >= group.min_margin:
-                return self._build_result_for_group(group, match)
+                print(f"[DEBUG] best panel {best_panel}: score={best_score:.4f}")
+            if best_score > 0.7:  # Panel detection threshold
+                return self._build_result_for_panel(best_panel)
 
         if self.debug:
-            print("[DEBUG] no valid group match")
+            print("[DEBUG] no panel detected")
 
         return DetectedButtons()
 
-        if ready_visible:
-            if self.debug:
-                print("[DEBUG] ready detected")
-            return DetectedButtons(ready_visible=True)
-
-        group_matches: list[tuple[GroupSpec, MatchResult]] = []
-
-        for group in (
-            self.COLOR_GROUP,
-            self.HIGHER_LOWER_GROUP,
-            self.INSIDE_OUTSIDE_GROUP,
-            self.SUIT_GROUP,
-        ):
-            match = self._best_match(image, group)
-            if match is None:
-                continue
-
-            if self.debug:
-                print(
-                    f"[DEBUG] group={group.name} "
-                    f"best_template={match.template_name} "
-                    f"score={match.score:.4f} "
-                    f"margin={match.margin:.4f}"
-                )
-
-            if match.score >= group.min_best_score and match.margin >= group.min_margin:
-                group_matches.append((group, match))
-
-        if not group_matches:
-            if self.debug:
-                print("[DEBUG] no valid group match")
-            return DetectedButtons()
-
-        group_matches.sort(key=lambda item: item[1].score, reverse=True)
-
-        best_group, best_match = group_matches[0]
-        second_group_score = group_matches[1][1].score if len(group_matches) > 1 else -1.0
-        group_margin = best_match.score - second_group_score
-
-        if self.debug:
-            print(
-                f"[DEBUG] selected group={best_group.name} "
-                f"template={best_match.template_name} "
-                f"score={best_match.score:.4f} "
-                f"group_margin={group_margin:.4f}"
-            )
-
-        if second_group_score >= 0.0 and group_margin < self.GROUP_SELECTION_MIN_MARGIN:
-            if self.debug:
-                print("[DEBUG] ambiguous group selection")
-            return DetectedButtons()
-
-        return self._build_result_for_group(best_group, best_match)
-
-    def _build_result_for_group(self, group: GroupSpec, match: MatchResult) -> DetectedButtons:
-        if group.name == "color":
+    def _build_result_for_panel(self, panel_name: str) -> DetectedButtons:
+        if panel_name == "color":
+            return DetectedButtons(red_visible=True, black_visible=True)
+        if panel_name == "higher_lower":
+            return DetectedButtons(higher_visible=True, lower_visible=True)
+        if panel_name == "inside_outside":
+            return DetectedButtons(inside_visible=True, outside_visible=True)
+        if panel_name == "suit":
             return DetectedButtons(
-                red_visible=(match.template_name == "red.png"),
-                black_visible=(match.template_name == "black.png"),
+                hearts_visible=True,
+                clubs_visible=True,
+                diamonds_visible=True,
+                spades_visible=True,
             )
-
-        if group.name == "higher_lower":
-            return DetectedButtons(
-                higher_visible=(match.template_name == "higher.png"),
-                lower_visible=(match.template_name == "lower.png"),
-            )
-
-        if group.name == "inside_outside":
-            return DetectedButtons(
-                inside_visible=(match.template_name == "inside.png"),
-                outside_visible=(match.template_name == "outside.png"),
-            )
-
-        if group.name == "suit":
-            return DetectedButtons(
-                hearts_visible=(match.template_name == "hearts.png"),
-                clubs_visible=(match.template_name == "clubs.png"),
-                diamonds_visible=(match.template_name == "diamonds.png"),
-                spades_visible=(match.template_name == "spades.png"),
-            )
-
         return DetectedButtons()
 
     def _best_match(self, image, group: GroupSpec) -> Optional[MatchResult]:
