@@ -6,6 +6,9 @@ __pycache__/
 venv/
 *.egg-info/
 
+# Claude Code
+.claude/
+
 # Bot debug/capture output
 _dbg_*.png
 _capture_*.png
