@@ -1,6 +1,8 @@
 # sched_bus
 
-> **Completely vibe-coded.** This project was built entirely through conversations with Claude — no manual architecture planning, no upfront design docs. Just vibes and iterations.
+> **Disclaimer:** This project is intended for personal, single-player use only. Use it responsibly and in accordance with the game's terms of service.
+
+> **Completely vibe-coded.** This project was built almost entirely through conversations with Claude — no manual architecture planning, no upfront design docs. Just vibes and iterations.
 
 A live automation bot for the **Ride the Bus** minigame in **Schedule I**. It watches the game screen, detects the current state and visible cards, picks the statistically best move using a heuristic strategy, and clicks the right button — fully automatically.
 

@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Bot debug/capture output
+_dbg_*.png
+_capture_*.png
+templates/cards_new/_capture_*.png
