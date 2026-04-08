@@ -45,11 +45,8 @@ class HeuristicStrategy:
     def _remaining_cards(self, ctx: RoundContext) -> list[Card]:
         return ctx.deck
 
-    def choose_color(self, ctx: RoundContext) -> ColorGroup:
-        remaining = self._remaining_cards(ctx)
-        red = sum(1 for card in remaining if card.color_group == ColorGroup.RED)
-        black = len(remaining) - red
-        return ColorGroup.RED if red >= black else ColorGroup.BLACK
+    def choose_color(self, _ctx: RoundContext) -> ColorGroup:
+        return ColorGroup.BLACK
 
     def choose_higher_lower(self, ctx: RoundContext) -> HigherLowerGuess:
         if ctx.card1 is None:

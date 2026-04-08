@@ -1,17 +1,14 @@
 """
 Template capture helper.
 
-Run this alongside the game to automatically save card corner crops.
-Each time a card appears in a slot, the top-left corner is saved as:
-    templates/cards_new/_capture_NNNN.png
+Run alongside the game to automatically save corner crops of unrecognised cards.
+Each new card is saved as:
+    templates/cards_new/_capture_NNNN_<slot>.png
 
-Rename the files afterwards to the correct card name, e.g.:
-    K_hearts.png
-    7_spades.png
-    Q_diamonds.png   (or Q_karo.png — both work)
+Rename the file to the correct card name afterwards, e.g.:
+    K_hearts.png  |  7_spades.png  |  Q_karo.png
 
-Controls:
-    Press Ctrl+C to stop.
+Press Ctrl+C to stop.
 """
 
 from __future__ import annotations
@@ -19,70 +16,60 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from detector import CardDetector, ButtonDetector, StateDetector, LiveUIState
+from detector import ButtonDetector, CardDetector, LiveUIState, StateDetector
 from game_reader import GameReader, TableLayout
 from vision import PILScreenCapture, Region, find_game_window
 
-SAVE_DIR = Path("templates/cards_new")
-CORNER_W_FRAC = 0.42
-CORNER_H_FRAC = 0.42
-CARD_Y      = 422
-CARD_W      = 145
-CARD_H      = 195
+SAVE_DIR  = Path("templates/cards_new")
+CARD_Y, CARD_W, CARD_H = 422, 145, 195
+CORNER_W, CORNER_H     = 0.42, 0.42
 
-_counter = [0]
-_seen: set[str] = set()
+# States that reveal a new card, mapped to the slot to inspect
+_CARD_STATES: dict[LiveUIState, tuple[str, int]] = {
+    LiveUIState.WAIT_HIGHER_LOWER_DECISION:   ("card1", 0),
+    LiveUIState.WAIT_INSIDE_OUTSIDE_DECISION: ("card2", 1),
+    LiveUIState.WAIT_SUIT_DECISION:           ("card3", 2),
+}
 
 
-def _save_corner(roi, slot_name: str, card_detector: CardDetector) -> None:
-    if not hasattr(roi, "size"):
-        return
-
-    # Check if we already have a template for this card
-    detected = card_detector.detect_card_at(roi, (0, 0, roi.size[0], roi.size[1]))
-    if detected is not None:
-        print(f"  [{slot_name}] already known: {detected.card} (score={detected.confidence:.2f}) — skipping")
-        return
-
+def _crop_corner(roi) -> object:
     w, h = roi.size
-    corner = roi.crop((0, 0, int(w * CORNER_W_FRAC), int(h * CORNER_H_FRAC)))
-
-    path = SAVE_DIR / f"_capture_{_counter[0]:04d}_{slot_name}.png"
-    corner.save(path)
-    print(f"  [{slot_name}] unknown card — saved {path.name}  (rename to e.g. K_hearts.png)")
-    _counter[0] += 1
+    return roi.crop((0, 0, int(w * CORNER_W), int(h * CORNER_H)))
 
 
 def main() -> None:
-    print("Looking for game window...")
+    print("Looking for game window…")
     window = find_game_window("Schedule I")
-    print(f"Found: {window}")
+    print(f"Found: {window}\n")
 
     capture = PILScreenCapture(monitor_region=window)
+    card_regions = [
+        Region(290, CARD_Y, CARD_W, CARD_H),
+        Region(435, CARD_Y, CARD_W, CARD_H),
+        Region(580, CARD_Y, CARD_W, CARD_H),
+        Region(725, CARD_Y, CARD_W, CARD_H),
+    ]
     layout = TableLayout(
         table_region=Region(0, 0, 1920, 1080),
-        card1_region=Region(290, CARD_Y, CARD_W, CARD_H),
-        card2_region=Region(435, CARD_Y, CARD_W, CARD_H),
-        card3_region=Region(580, CARD_Y, CARD_W, CARD_H),
-        card4_region=Region(725, CARD_Y, CARD_W, CARD_H),
+        card1_region=card_regions[0],
+        card2_region=card_regions[1],
+        card3_region=card_regions[2],
+        card4_region=card_regions[3],
     )
+    detector = CardDetector()
     reader = GameReader(
         capture=capture,
         layout=layout,
-        card_detector=CardDetector(debug=False),
-        button_detector=ButtonDetector(debug=False),
+        card_detector=detector,
+        button_detector=ButtonDetector(),
         state_detector=StateDetector(),
     )
 
-    # States where cards are newly revealed
-    card_states = {
-        LiveUIState.WAIT_HIGHER_LOWER_DECISION:   [("card1", layout.card1_region)],
-        LiveUIState.WAIT_INSIDE_OUTSIDE_DECISION: [("card2", layout.card2_region)],
-        LiveUIState.WAIT_SUIT_DECISION:           [("card3", layout.card3_region)],
-    }
-
+    counter = 0
+    handled: set[LiveUIState] = set()
     last_state = LiveUIState.UNKNOWN
-    print("Running — play the game normally, corner crops will be saved automatically.")
+
+    print("Running — play normally, unknown cards are saved automatically.")
     print("Press Ctrl+C to stop.\n")
 
     while True:
@@ -90,27 +77,29 @@ def main() -> None:
             snapshot = reader.read_snapshot()
             state = snapshot.ui_state
 
-            if state != last_state and state in card_states:
-                table_img = capture.capture_region(layout.table_region)
-                for slot_name, region in card_states[state]:
-                    key = f"{state.name}_{slot_name}"
-                    if key not in _seen:
-                        roi = table_img.crop((
-                            region.x, region.y,
-                            region.x + region.width,
-                            region.y + region.height,
-                        ))
-                        _save_corner(roi, slot_name, reader.card_detector)
-                        _seen.add(key)
-
             if state != last_state:
                 last_state = state
-                _seen.clear()
+                handled.discard(state)
+
+            if state in _CARD_STATES and state not in handled:
+                slot_name, slot_idx = _CARD_STATES[state]
+                roi = capture.capture_region(card_regions[slot_idx])
+                detected = detector.detect_card_at(roi, (0, 0, roi.size[0], roi.size[1]))
+
+                if detected is not None:
+                    print(f"  [{slot_name}] already known: {detected.card}  (score={detected.confidence:.2f})")
+                else:
+                    path = SAVE_DIR / f"_capture_{counter:04d}_{slot_name}.png"
+                    _crop_corner(roi).save(path)
+                    print(f"  [{slot_name}] unknown — saved {path.name}  → rename to e.g. K_hearts.png")
+                    counter += 1
+
+                handled.add(state)
 
             time.sleep(0.5)
 
         except KeyboardInterrupt:
-            print(f"\nDone. Saved {_counter[0]} crops to {SAVE_DIR}/")
+            print(f"\nDone. {counter} new crop(s) saved to {SAVE_DIR}/")
             break
 
 

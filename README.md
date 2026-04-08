@@ -1,71 +1,113 @@
 # sched_bus
 
-This project is a structured analysis of a minigame from **Schedule I**, with the goal of turning its flow into a clean and reusable logical model.
+> **Completely vibe-coded.** This project was built entirely through conversations with Claude — no manual architecture planning, no upfront design docs. Just vibes and iterations.
 
-Instead of building a messy collection of `if` statements, the project focuses on describing the minigame as a set of:
+A live automation bot for the **Ride the Bus** minigame in **Schedule I**. It watches the game screen, detects the current state and visible cards, picks the statistically best move using a heuristic strategy, and clicks the right button — fully automatically.
 
-- **states**
-- **rules**
-- **transitions**
-- **success conditions**
-- **failure conditions**
-- **special cases**
+## How it works
 
-The idea is to make the logic easy to understand first, and only then prepare it for technical use in code.
+```
+┌──────────────────────────────────────────────┐
+│  Game Loop                                   │
+├──────────────────────────────────────────────┤
+│ 1. Find game window on screen                │
+│ 2. Capture screenshot of game content        │
+│ 3. Detect UI state (which panel is visible?) │
+│ 4. Detect cards on the table                 │
+│ 5. Strategy picks the best move              │
+│ 6. Click the button                          │
+│ 7. Wait 4 seconds, repeat                    │
+└──────────────────────────────────────────────┘
+```
 
-## Purpose
+The game has four decision steps per round:
 
-The main purpose of this repository is to break the minigame down into a form that can later be implemented in Python or another language without depending on the original game code directly.
+| Step | Decision | Cards visible |
+|------|----------|---------------|
+| 1 | Red or Black? | 0 |
+| 2 | Higher or Lower? | 1 |
+| 3 | Inside or Outside? | 2 |
+| 4 | Which suit? | 3 |
 
-This means the project is not just about automation, but about building a **clear decision model** of how the minigame works.
+The strategy tracks which cards have been revealed and uses the remaining deck to calculate the highest-probability choice at each step.
 
-## Approach
+## Setup
 
-The logic is modeled in a structured way, similar to a:
+### Requirements
 
-- **state machine**
-- **decision tree**
-- or a combination of both
+- Python 3.11+
+- Schedule I running in **windowed mode at 1920×1080**
+- The game window can be placed anywhere on screen — the bot finds it automatically by window title
 
-Each step of the minigame is described by:
-
-┌─────────────────────────────────────────────┐
-│  Game Loop (every 2 seconds)               │
-├─────────────────────────────────────────────┤
-│ 1. Screenshot capture (whole screen)        │
-│ 2. Detect game state (which of 5 screens?)  │
-│ 3. Crop card region + detect cards          │
-│ 4. Feed cards to strategy.decide()          │
-│ 5. Get action (which button to click)       │
-│ 6. Execute mouse click                      │
-│ 7. Wait 2 seconds, repeat                   │
-└─────────────────────────────────────────────┘
-
-This makes the system easier to test, maintain, and extend later.
-
-## Project Goal
-
-The final goal is to have a logical foundation that can be reused for things such as:
-
-- simulation
-- scripting
-- automated decision-making
-- further technical integration
-
-## Project Structure
-
-- `models.py` → core data models, enums, and round context
-- `deck.py` → deck creation, shuffling, and card drawing
-- `rules.py` → pure rule evaluation for all four game steps
-- `strategy.py` → strategy interface and strategy implementations
-- `engine.py` → round flow and state machine logic
-- `simulation.py` → repeated round simulation and statistics
-- `main.py` → simple entry point for demo runs and simulations
-- `tests/` → automated tests for rules and engine behavior
-
-## Running the Project
-
-You can run the project directly with:
+### Install dependencies
 
 ```bash
-python main.py
+pip install pillow opencv-python pyautogui pygetwindow
+```
+
+### Window configuration
+
+The bot requires the game to run at exactly **1920×1080** in windowed mode. All card slot positions and button coordinates are calibrated to this resolution.
+
+1. Launch **Schedule I**
+2. In the game settings, set the resolution to **1920×1080** and mode to **Windowed**
+3. You do not need to place the window in a specific position — the bot detects it by the window title `Schedule I`
+
+### Card templates
+
+The bot recognises cards by matching the top-left corner of each card against template images in `templates/cards_new/`. The more templates you have, the better the card detection.
+
+To collect templates while playing:
+
+```bash
+python capture_templates.py
+```
+
+Play normally — every time a card appears that the bot doesn't recognise yet, a corner crop is saved to `templates/cards_new/` as `_capture_NNNN_card1.png`. Rename the file to the correct card name (e.g. `K_hearts.png`, `7_spades.png`, `Q_karo.png`) and it will be picked up automatically next run.
+
+Supported filename formats: `RANK_SUIT.png` — variant images like `K_hearts_2.png` are also supported for cards with multiple visual states.
+
+## Running the bot
+
+```bash
+python game_loop.py
+```
+
+Make sure the game is open and on the Ride the Bus table before starting. The bot will print its state, action, decision and detected cards to the console on every tick:
+
+```
+state=WAIT_READY                   action=CLICK_READY        decision=-          cards=[none]
+state=WAIT_COLOR_DECISION          action=CHOOSE_COLOR        decision=BLACK      cards=[none]
+state=WAIT_HIGHER_LOWER_DECISION   action=CHOOSE_HIGHER_LOWER decision=HIGHER     cards=[ACE:karo]
+state=WAIT_INSIDE_OUTSIDE_DECISION action=CHOOSE_INSIDE_OUTSIDE decision=OUTSIDE  cards=[ACE:karo, JACK:karo]
+state=WAIT_SUIT_DECISION           action=CHOOSE_SUIT         decision=HEARTS     cards=[ACE:karo, JACK:karo, FIVE:herz]
+```
+
+Stop with **Ctrl+C**.
+
+## Project structure
+
+```
+game_loop.py          — main entry point, runs the automation loop
+live_adapter.py       — bridges UI state to strategy decisions
+clicker.py            — translates decisions into mouse clicks
+detector.py           — button and card detection via OpenCV template matching
+game_reader.py        — captures screenshot and assembles a game snapshot
+vision.py             — screenshot capture and window detection
+strategy.py           — decision strategies (heuristic, lookahead, random)
+capture_templates.py  — helper to collect new card templates during play
+
+models.py             — core data models and enums
+deck.py               — deck creation and shuffling
+rules.py              — pure rule evaluation for all four game steps
+engine.py             — round state machine (used for simulation)
+simulation.py         — multi-round simulation and statistics
+main.py               — run simulations offline
+
+templates/
+  buttons/            — panel and button reference images
+  cards_new/          — card corner templates for recognition
+
+screens/              — reference screenshots used during development
+tests/                — unit tests for game logic
+```

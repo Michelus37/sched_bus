@@ -4,7 +4,7 @@ import logging
 import time
 
 from clicker import MouseClicker
-from detector import ButtonDetector, CardDetector, StateDetector
+from detector import ButtonDetector, CardDetector, LiveUIState, StateDetector
 from game_reader import GameReader, TableLayout
 from live_adapter import AdapterAction, AdapterActionType, LiveAdapter
 from strategy import HeuristicStrategy
@@ -30,8 +30,9 @@ def _build_layout() -> TableLayout:
     )
 
 
-POLL_INTERVAL = 0.5       # seconds between polls while waiting for a state change
-POST_CLICK_WAIT = 5.0     # seconds to wait after a click for the game to animate/transition
+POLL_INTERVAL      = 0.5  # seconds between polls while waiting for a state change
+READY_CLICK_WAIT   = 1.5  # after clicking Ready — just opens the color panel, no card dealt
+DECISION_CLICK_WAIT = 5.0  # after a decision click — a card is dealt and animated
 
 
 class GameLoop:
@@ -55,11 +56,19 @@ class GameLoop:
         while True:
             try:
                 snapshot, action = self.adapter.tick()
-                cards_str = ", ".join(str(c) for c in snapshot.visible_cards) or "none"
+                max_cards = {
+                    LiveUIState.WAIT_HIGHER_LOWER_DECISION:   1,
+                    LiveUIState.WAIT_INSIDE_OUTSIDE_DECISION: 2,
+                    LiveUIState.WAIT_SUIT_DECISION:           3,
+                }
+                n = max_cards.get(snapshot.ui_state, 0)
+                cards_str = ", ".join(str(c) for c in snapshot.visible_cards[:n]) or "none"
+                decision_str = str(action.payload["choice"].name) if action.payload and "choice" in action.payload else "-"
                 log.info(
-                    "state=%-30s action=%-25s cards=[%s]",
+                    "state=%-30s action=%-25s decision=%-10s cards=[%s]",
                     snapshot.ui_state.name,
                     action.type.name,
+                    decision_str,
                     cards_str,
                 )
 
@@ -67,7 +76,8 @@ class GameLoop:
                     time.sleep(POLL_INTERVAL)
                 else:
                     self._execute(action)
-                    time.sleep(POST_CLICK_WAIT)
+                    wait = READY_CLICK_WAIT if action.type == AdapterActionType.CLICK_READY else DECISION_CLICK_WAIT
+                    time.sleep(wait)
 
             except KeyboardInterrupt:
                 log.info("Stopped by user.")
